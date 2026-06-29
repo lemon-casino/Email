@@ -45,7 +45,7 @@
 
 ```bash
 # 拉取最新镜像
-docker pull ghcr.io/assast/outlookemail:latest
+docker pull ghcr.io/lemon-casino/email:latest
 
 # 运行容器
 docker run -d \
@@ -54,7 +54,7 @@ docker run -d \
   -v $(pwd)/data:/app/data \
   -e LOGIN_PASSWORD=admin123 \
   -e SECRET_KEY=your-secret-key-here \
-  ghcr.io/assast/outlookemail:latest
+  ghcr.io/lemon-casino/email:latest
 ```
 
 ### 方式四：使用 Python 直接运行
@@ -80,7 +80,7 @@ python web_outlook_app.py
 version: '3.8'
 services:
   outlook-mail-reader:
-    image: ghcr.io/assast/outlookemail:latest
+    image: ghcr.io/lemon-casino/email:latest
     container_name: outlook-mail-reader
     ports:
       - "5000:5000"
@@ -112,7 +112,7 @@ docker-compose up -d
 version: '3.8'
 services:
   outlook-mail-reader:
-    image: ghcr.io/assast/outlookemail:latest
+    image: ghcr.io/lemon-casino/email:latest
     container_name: outlook-mail-reader
     ports:
       - "5000:5000"
