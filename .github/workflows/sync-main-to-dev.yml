@@ -30,12 +30,16 @@ jobs:
 
       - name: Fetch target branches
         run: |
-          git fetch origin main dev
+          git fetch origin '+refs/heads/*:refs/remotes/origin/*'
 
       - name: Merge main into dev
         run: |
-          git checkout -B dev origin/dev
-          git merge --no-ff --no-edit origin/main
+          if git show-ref --verify --quiet refs/remotes/origin/dev; then
+            git checkout -B dev origin/dev
+            git merge --no-ff --no-edit origin/main
+          else
+            git checkout -B dev origin/main
+          fi
 
       - name: Push dev branch
         run: |
