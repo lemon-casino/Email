@@ -10,6 +10,7 @@ build/
 venv/
 env/
 ENV/
+.venv/
 
 # 数据库文件
 *.db
@@ -28,6 +29,11 @@ data/
 
 # 日志
 *.log
+.agent/
+.fastRequest/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # 系统文件
 .DS_Store
