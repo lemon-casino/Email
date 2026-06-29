@@ -26,7 +26,7 @@
 ### 升级到最新稳定分支构建
 
 ```bash
-docker pull ghcr.io/assast/outlookemail:latest
+docker pull ghcr.io/lemon-casino/email:latest
 docker compose down
 docker compose up -d
 ```

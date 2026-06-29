@@ -20,7 +20,7 @@
 
 ```bash
 # 拉取最新镜像
-docker pull ghcr.io/assast/outlookemail:latest
+docker pull ghcr.io/lemon-casino/email:latest
 
 # 运行容器
 docker run -d \
@@ -29,7 +29,7 @@ docker run -d \
   -v $(pwd)/data:/app/data \
   -e LOGIN_PASSWORD=admin123 \
   -e SECRET_KEY=your-secret-key-here \
-  ghcr.io/assast/outlookemail:latest
+  ghcr.io/lemon-casino/email:latest
 
 # 查看日志
 docker logs -f outlook-mail-reader
@@ -86,7 +86,7 @@ version: '3.8'
 
 services:
   outlook-mail-reader:
-    image: ghcr.io/assast/outlookemail:latest
+    image: ghcr.io/lemon-casino/email:latest
     container_name: outlook-mail-reader
     ports:
       - "5000:5000"
@@ -171,7 +171,7 @@ ports:
 
 ### 可用镜像标签
 
-- `ghcr.io/assast/outlookemail:latest` - 默认分支最近一次符合条件的稳定构建
+- `ghcr.io/lemon-casino/email:latest` - 默认分支最近一次符合条件的稳定构建
 - `ghcr.io/assast/outlookemail:main` - `main` 分支最近一次符合条件的构建
 - `ghcr.io/assast/outlookemail:dev` - `dev` 分支最近一次符合条件的构建
 - `ghcr.io/assast/outlookemail:vX.Y.Z` - 指定正式版本镜像，由手动发版工作流生成
@@ -185,7 +185,7 @@ ports:
 ### 更新镜像
 
 ```bash
-docker pull ghcr.io/assast/outlookemail:latest
+docker pull ghcr.io/lemon-casino/email:latest
 docker-compose down
 docker-compose up -d
 ```

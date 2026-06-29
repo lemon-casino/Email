@@ -1,7 +1,7 @@
 version: '3.8'
 services:
   outlook-mail-reader:
-    image: ghcr.io/assast/outlookemail:latest
+    image: ghcr.io/lemon-casino/email:latest
     container_name: outlook-mail-reader
     ports:
       - "5000:5000"
