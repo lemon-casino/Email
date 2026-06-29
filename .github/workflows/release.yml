@@ -113,7 +113,7 @@ jobs:
         shell: bash
         env:
           OUTLOOK_EMAIL_MACOS_ARCH: ${{ matrix.arch }}
-        run: scripts/build-macos-dmg.sh
+        run: bash scripts/build-macos-dmg.sh
 
       - name: Verify macOS binary architecture
         shell: bash
