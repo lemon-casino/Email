@@ -211,6 +211,25 @@ def api_get_version_status():
     })
 
 
+@app.route('/api/runtime-diagnostics', methods=['GET'])
+@login_required
+def api_runtime_diagnostics():
+    """Expose non-secret runtime diagnostics for packaged/source verification."""
+    return jsonify({
+        'success': True,
+        'app_version': APP_VERSION,
+        'runtime_root': str(runtime_root()),
+        'database': str(DATABASE),
+        'secret_key': secret_key_diagnostics(),
+        'csrf': {
+            'available': CSRF_AVAILABLE,
+            'enabled': bool(app.config.get('WTF_CSRF_ENABLED', True)),
+            'custom_guard': bool(app.config.get('OUTLOOK_CUSTOM_CSRF_ENABLED', True)),
+            'default_check': bool(app.config.get('WTF_CSRF_CHECK_DEFAULT', False)),
+        },
+    })
+
+
 @app.route('/api/csrf-token', methods=['GET'])
 @login_required
 @csrf_exempt  # CSRF token获取接口排除CSRF保护

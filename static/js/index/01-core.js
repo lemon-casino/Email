@@ -1125,36 +1125,49 @@
             }
 
             csrfRefreshPromise = (async () => {
-                const response = await originalFetch('/api/csrf-token', {
-                    cache: 'no-store',
-                    credentials: 'same-origin',
-                    headers: {
-                        'Cache-Control': 'no-cache'
+                let lastError = null;
+                for (let attempt = 0; attempt < 3; attempt += 1) {
+                    try {
+                        const response = await originalFetch('/api/csrf-token', {
+                            cache: 'no-store',
+                            credentials: 'same-origin',
+                            headers: {
+                                'Cache-Control': 'no-cache',
+                                'X-Requested-With': 'XMLHttpRequest'
+                            }
+                        });
+                        if (await handleAuthenticationRequiredResponse(response)) {
+                            return null;
+                        }
+                        if (!response.ok) {
+                            throw new Error(`CSRF token request failed: ${response.status}`);
+                        }
+                        const contentType = response.headers.get('content-type') || '';
+                        if (!contentType.includes('application/json')) {
+                            throw new Error('CSRF token request returned a non-JSON response');
+                        }
+                        const data = await response.json();
+                        csrfToken = data.csrf_token || null;
+                        csrfProtectionDisabled = Boolean(data.csrf_disabled);
+                        csrfLastRefreshAt = Date.now();
+                        if (data.csrf_disabled) {
+                            console.warn('CSRF protection is disabled. Install flask-wtf for better security.');
+                        }
+                        const refreshAfterSeconds = Number(data.refresh_after_seconds);
+                        const refreshDelay = Number.isFinite(refreshAfterSeconds) && refreshAfterSeconds > 0
+                            ? Math.min(Math.max(refreshAfterSeconds * 1000, 30000), CSRF_PROACTIVE_REFRESH_MS)
+                            : CSRF_PROACTIVE_REFRESH_MS;
+                        scheduleCSRFTokenRefresh(refreshDelay);
+                        return csrfToken;
+                    } catch (error) {
+                        lastError = error;
+                        if (attempt < 2) {
+                            await new Promise(resolve => window.setTimeout(resolve, 250 * (attempt + 1)));
+                        }
                     }
-                });
-                if (await handleAuthenticationRequiredResponse(response)) {
-                    return null;
                 }
-                if (!response.ok) {
-                    throw new Error(`CSRF token request failed: ${response.status}`);
-                }
-                const contentType = response.headers.get('content-type') || '';
-                if (!contentType.includes('application/json')) {
-                    throw new Error('CSRF token request returned a non-JSON response');
-                }
-                const data = await response.json();
-                csrfToken = data.csrf_token || null;
-                csrfProtectionDisabled = Boolean(data.csrf_disabled);
-                csrfLastRefreshAt = Date.now();
-                if (data.csrf_disabled) {
-                    console.warn('CSRF protection is disabled. Install flask-wtf for better security.');
-                }
-                const refreshAfterSeconds = Number(data.refresh_after_seconds);
-                const refreshDelay = Number.isFinite(refreshAfterSeconds) && refreshAfterSeconds > 0
-                    ? Math.min(Math.max(refreshAfterSeconds * 1000, 30000), CSRF_PROACTIVE_REFRESH_MS)
-                    : CSRF_PROACTIVE_REFRESH_MS;
-                scheduleCSRFTokenRefresh(refreshDelay);
-                return csrfToken;
+
+                throw lastError || new Error('CSRF token request failed');
             })();
 
             try {
@@ -1181,6 +1194,20 @@
             options.headers = {
                 ...(options.headers || {}),
                 'X-CSRFToken': token
+            };
+        }
+
+        function appendSameOriginWriteHeader(options) {
+            if (options.headers instanceof Headers) {
+                if (!options.headers.has('X-Requested-With')) {
+                    options.headers.set('X-Requested-With', 'XMLHttpRequest');
+                }
+                return;
+            }
+
+            options.headers = {
+                ...(options.headers || {}),
+                'X-Requested-With': options.headers?.['X-Requested-With'] || 'XMLHttpRequest'
             };
         }
 
@@ -1219,6 +1246,7 @@
                 if (!csrfToken && !csrfProtectionDisabled && authenticationRedirectScheduled) {
                     return buildJsonResponse({ success: false, error: '请先登录', need_login: true }, 401);
                 }
+                appendSameOriginWriteHeader(requestOptions);
                 appendCSRFHeader(requestOptions, csrfToken);
             }
 
@@ -1238,6 +1266,7 @@
                 }
                 if (refreshedToken || csrfProtectionDisabled) {
                     const retryOptions = cloneFetchOptions(options);
+                    appendSameOriginWriteHeader(retryOptions);
                     appendCSRFHeader(retryOptions, refreshedToken);
                     return fetchWithCSRF(url, retryOptions, true);
                 }

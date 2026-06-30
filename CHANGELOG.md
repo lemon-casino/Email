@@ -6,6 +6,13 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 
 ## [Unreleased]
 
+## [2.5.2] - 2026-06-30
+
+### Fixed
+- 后端改为自定义 CSRF 守卫：登录用户的同源 API 写请求在 CSRF Token 缺失或旧 Token 失配时自动恢复，分组新增、编辑、删除等正常使用不再被误拦截。
+- CSRF Token 获取增加前端重试和同源请求标识，降低页面长时间打开、Session 续期或网络瞬断后首次操作失败的概率。
+- 启动日志和运行诊断接口新增 SECRET_KEY 来源、路径、指纹和 `secret_key.txt` 一致性状态，便于确认 Windows/macOS 打包版是否读取到正确的持久化密钥。
+
 ## [2.5.1] - 2026-06-30
 
 ### Fixed

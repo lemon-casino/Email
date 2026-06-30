@@ -41,7 +41,7 @@ import requests
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from outlook_web.runtime import default_database_path, resource_path, resolve_secret_key, runtime_root
+from outlook_web.runtime import default_database_path, resource_path, resolve_secret_key, runtime_root, secret_key_diagnostics
 from outlook_web.mail_datetime import parse_mail_datetime
 
 # 尝试导入 Flask-WTF CSRF 保护
@@ -100,17 +100,80 @@ forwarding_run_lock = threading.Lock()
 proxy_socket_lock = threading.RLock()
 
 
+def normalize_request_origin(value: str) -> str:
+    parsed = urlparse(str(value or '').strip())
+    if not parsed.scheme or not parsed.netloc:
+        return ''
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+
+
+def is_same_origin_request() -> bool:
+    expected_origin = normalize_request_origin(f"{request.scheme}://{request.host}")
+    origin = normalize_request_origin(request.headers.get('Origin', ''))
+    if origin:
+        return origin == expected_origin
+
+    referer = normalize_request_origin(request.headers.get('Referer', ''))
+    if referer:
+        return referer == expected_origin
+
+    return str(request.headers.get('Sec-Fetch-Site', '') or '').strip().lower() == 'same-origin'
+
+
+def should_recover_same_origin_csrf_failure() -> bool:
+    if not session.get('logged_in'):
+        return False
+    if not request.path.startswith('/api/') or request.path.startswith('/api/external/'):
+        return False
+    return is_same_origin_request()
+
+
+@app.before_request
+def disable_flask_wtf_default_csrf_hook():
+    """Use the app CSRF guard so same-origin logged-in requests can recover."""
+    if CSRF_AVAILABLE and app.config.get('OUTLOOK_CUSTOM_CSRF_ENABLED', True):
+        app.config['WTF_CSRF_CHECK_DEFAULT'] = False
+
+
 # 初始化 CSRF 保护（如果可用）
 if CSRF_AVAILABLE:
     csrf = CSRFProtect(app)
     # 配置 CSRF
     app.config['WTF_CSRF_TIME_LIMIT'] = None  # CSRF token 不过期
     app.config['WTF_CSRF_SSL_STRICT'] = False  # 允许非HTTPS环境（开发环境）
+    app.config['WTF_CSRF_CHECK_DEFAULT'] = False  # 由自定义守卫统一执行，支持同源恢复
     print("CSRF protection enabled")
 
     # 创建CSRF排除装饰器
     def csrf_exempt(f):
         return csrf.exempt(f)
+
+    @app.before_request
+    def enforce_outlook_csrf_protection():
+        if not app.config.get('WTF_CSRF_ENABLED', True):
+            return
+        if not app.config.get('OUTLOOK_CUSTOM_CSRF_ENABLED', True):
+            return
+        if request.method not in app.config.get('WTF_CSRF_METHODS', {'POST', 'PUT', 'PATCH', 'DELETE'}):
+            return
+
+        try:
+            csrf.protect(apply_exemptions=True)
+        except CSRFError as error:
+            if should_recover_same_origin_csrf_failure():
+                g.csrf_valid = True
+                g.csrf_same_origin_recovered = True
+                print(
+                    "CSRF same-origin recovery: "
+                    f"path={request.path}, method={request.method}, "
+                    f"description={getattr(error, 'description', str(error))}"
+                )
+                try:
+                    generate_csrf()
+                except Exception:
+                    pass
+                return
+            raise
 else:
     csrf = None
     # 显式禁用CSRF保护
@@ -2474,6 +2537,15 @@ def init_app():
     print("Outlook 邮件 Web 应用已初始化")
     print(f"数据库文件: {DATABASE}")
     print(f"运行目录: {runtime_root()}")
+    secret_diag = secret_key_diagnostics()
+    print(
+        "SECRET_KEY: "
+        f"source={secret_diag.get('source') or 'unknown'}, "
+        f"path={secret_diag.get('path') or '-'}, "
+        f"fingerprint={secret_diag.get('fingerprint') or '-'}, "
+        f"file_exists={secret_diag.get('file_exists')}, "
+        f"file_matches={secret_diag.get('file_matches')}"
+    )
     print(f"GPTMail API: {GPTMAIL_BASE_URL}")
     print(f"DuckMail API: {DUCKMAIL_BASE_URL}")
     print(f"Cloudflare Temp Email Worker: {CLOUDFLARE_WORKER_DOMAIN or '未配置'}")
