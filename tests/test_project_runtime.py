@@ -823,10 +823,39 @@ class ProjectRuntimeTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertIn('csrf_token', payload)
+        self.assertTrue(payload['authenticated'])
+        self.assertGreaterEqual(payload['refresh_after_seconds'], 60)
+        self.assertGreater(payload['session_lifetime_seconds'], 0)
         self.assertIn('no-store', response.headers.get('Cache-Control', ''))
         self.assertEqual(response.headers.get('Pragma'), 'no-cache')
         self.assertEqual(response.headers.get('Expires'), '0')
         self.assertIn('Cookie', response.headers.get('Vary', ''))
+
+    def test_csrf_token_endpoint_refreshes_permanent_session(self):
+        with self.client.session_transaction() as sess:
+            sess['logged_in'] = True
+            sess.permanent = False
+
+        response = self.client.get('/api/csrf-token')
+
+        self.assertEqual(response.status_code, 200)
+        with self.client.session_transaction() as sess:
+            self.assertTrue(sess.get('logged_in'))
+            self.assertTrue(sess.get('_permanent'))
+
+    def test_logout_clears_session_state(self):
+        with self.client.session_transaction() as sess:
+            sess['logged_in'] = True
+            sess['csrf_token'] = 'stale-token'
+            sess['other_state'] = 'kept-before-logout'
+
+        response = self.client.get('/logout')
+
+        self.assertEqual(response.status_code, 302)
+        with self.client.session_transaction() as sess:
+            self.assertNotIn('logged_in', sess)
+            self.assertNotIn('csrf_token', sess)
+            self.assertNotIn('other_state', sess)
 
     def test_version_status_reports_update_when_remote_repository_is_newer(self):
         with patch.object(
@@ -2330,6 +2359,26 @@ class FrontendColorPickerTests(unittest.TestCase):
             init_color_picker.index("option.dataset.colorPickerBound = 'true';"),
             init_color_picker.index("option.addEventListener('click'")
         )
+
+
+class FrontendCsrfRefreshTests(unittest.TestCase):
+    def test_core_fetch_wrapper_proactively_refreshes_csrf_and_session(self):
+        core_js = pathlib.Path(ROOT_DIR, 'static', 'js', 'index', '01-core.js').read_text(encoding='utf-8')
+
+        self.assertIn('const CSRF_PROACTIVE_REFRESH_MS = 10 * 60 * 1000;', core_js)
+        self.assertIn("scheduleCSRFTokenRefresh(refreshDelay);", core_js)
+        self.assertIn("registerCSRFRefreshHooks();", core_js)
+        self.assertIn("window.addEventListener('focus'", core_js)
+        self.assertIn("document.addEventListener('visibilitychange'", core_js)
+        self.assertIn("await initCSRFToken(true, 'pre-request');", core_js)
+
+    def test_core_fetch_wrapper_retries_csrf_failures_before_showing_errors(self):
+        core_js = pathlib.Path(ROOT_DIR, 'static', 'js', 'index', '01-core.js').read_text(encoding='utf-8')
+
+        self.assertIn('async function handleAuthenticationRequiredResponse(response)', core_js)
+        self.assertIn("return buildJsonResponse({ success: false, error: '请先登录', need_login: true }, 401);", core_js)
+        self.assertIn("const refreshedToken = await initCSRFToken(true, 'csrf-retry');", core_js)
+        self.assertIn('appendCSRFHeader(retryOptions, refreshedToken);', core_js)
 
 
 class FrontendAccountSearchScopeTests(unittest.TestCase):

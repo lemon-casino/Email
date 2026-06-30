@@ -2233,6 +2233,23 @@ def parse_email_datetime(value: str) -> Optional[datetime]:
     return parse_mail_datetime(value)
 
 
+def refresh_authenticated_session():
+    """Keep an authenticated permanent session alive during active use."""
+    session['logged_in'] = True
+    session.permanent = True
+    session.modified = True
+
+
+def get_session_lifetime_seconds() -> int:
+    lifetime = app.config.get('PERMANENT_SESSION_LIFETIME', 0)
+    if isinstance(lifetime, timedelta):
+        return max(0, int(lifetime.total_seconds()))
+    try:
+        return max(0, int(lifetime))
+    except (TypeError, ValueError):
+        return 0
+
+
 def login_required(f):
     """登录验证装饰器"""
     @wraps(f)
@@ -2241,6 +2258,7 @@ def login_required(f):
             if request.is_json or request.path.startswith('/api/'):
                 return jsonify({'success': False, 'error': '请先登录', 'need_login': True}), 401
             return redirect(url_for('login'))
+        refresh_authenticated_session()
         return f(*args, **kwargs)
     decorated_function._requires_login = True
     return decorated_function
