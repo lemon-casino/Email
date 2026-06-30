@@ -20,6 +20,7 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 web_outlook_app = importlib.import_module('web_outlook_app')
+runtime_module = importlib.import_module('outlook_web.runtime')
 
 
 class ProjectRuntimeTests(unittest.TestCase):
@@ -133,6 +134,13 @@ class ProjectRuntimeTests(unittest.TestCase):
         payload = response.get_json()
         self.assertTrue(payload['success'])
         return payload['data']['accounts']
+
+    def _restore_secret_key_diagnostics(self, diagnostics):
+        runtime_module.SECRET_KEY_SOURCE = diagnostics['source']
+        runtime_module.SECRET_KEY_SOURCE_PATH = diagnostics['path']
+        runtime_module.SECRET_KEY_FINGERPRINT = diagnostics['fingerprint']
+        runtime_module.SECRET_KEY_FILE_EXISTS = diagnostics['file_exists']
+        runtime_module.SECRET_KEY_FILE_MATCHES = diagnostics['file_matches']
 
     def _import_outlook_oauth_accounts(self, account_lines):
         response = self.client.post('/api/accounts', json={
@@ -843,6 +851,69 @@ class ProjectRuntimeTests(unittest.TestCase):
             self.assertTrue(sess.get('logged_in'))
             self.assertTrue(sess.get('_permanent'))
 
+    def test_runtime_diagnostics_reports_secret_key_source_without_secret_value(self):
+        response = self.client.get('/api/runtime-diagnostics')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['app_version'], web_outlook_app.APP_VERSION)
+        self.assertIn('runtime_root', payload)
+        self.assertIn('database', payload)
+        self.assertIn('secret_key', payload)
+        self.assertIn('source', payload['secret_key'])
+        self.assertIn('fingerprint', payload['secret_key'])
+        self.assertIn('file_exists', payload['secret_key'])
+        self.assertIn('file_matches', payload['secret_key'])
+        self.assertNotIn(os.environ.get('SECRET_KEY', 'test-secret-key'), str(payload))
+        self.assertTrue(payload['csrf']['custom_guard'])
+
+    def test_secret_key_diagnostics_report_environment_file_match(self):
+        original_diagnostics = runtime_module.secret_key_diagnostics().copy()
+        key = 'env-file-secret-for-diagnostics'
+
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                secret_path = pathlib.Path(temp_dir, runtime_module.SECRET_KEY_FILE)
+                secret_path.write_text(key, encoding='utf-8')
+
+                with patch.dict(os.environ, {'OUTLOOK_EMAIL_HOME': temp_dir, 'SECRET_KEY': key}):
+                    self.assertEqual(runtime_module.resolve_secret_key(), key)
+
+                diagnostics = runtime_module.secret_key_diagnostics()
+                self.assertEqual(diagnostics['source'], 'environment+file')
+                self.assertEqual(diagnostics['path'], str(secret_path))
+                self.assertTrue(diagnostics['file_exists'])
+                self.assertTrue(diagnostics['file_matches'])
+                self.assertNotEqual(diagnostics['fingerprint'], key)
+        finally:
+            self._restore_secret_key_diagnostics(original_diagnostics)
+
+    def test_secret_key_diagnostics_report_packaged_file_source(self):
+        original_diagnostics = runtime_module.secret_key_diagnostics().copy()
+        key = 'packaged-file-secret-for-diagnostics'
+        original_env_secret = os.environ.pop('SECRET_KEY', None)
+
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                secret_path = pathlib.Path(temp_dir, runtime_module.SECRET_KEY_FILE)
+                secret_path.write_text(key, encoding='utf-8')
+
+                with patch.dict(os.environ, {'OUTLOOK_EMAIL_HOME': temp_dir}):
+                    with patch.object(runtime_module.sys, 'frozen', True, create=True):
+                        self.assertEqual(runtime_module.resolve_secret_key(), key)
+
+                diagnostics = runtime_module.secret_key_diagnostics()
+                self.assertEqual(diagnostics['source'], 'file')
+                self.assertEqual(diagnostics['path'], str(secret_path))
+                self.assertTrue(diagnostics['file_exists'])
+                self.assertTrue(diagnostics['file_matches'])
+                self.assertNotEqual(diagnostics['fingerprint'], key)
+        finally:
+            if original_env_secret is not None:
+                os.environ['SECRET_KEY'] = original_env_secret
+            self._restore_secret_key_diagnostics(original_diagnostics)
+
     def test_logout_clears_session_state(self):
         with self.client.session_transaction() as sess:
             sess['logged_in'] = True
@@ -856,6 +927,75 @@ class ProjectRuntimeTests(unittest.TestCase):
             self.assertNotIn('logged_in', sess)
             self.assertNotIn('csrf_token', sess)
             self.assertNotIn('other_state', sess)
+
+    @unittest.skipUnless(getattr(web_outlook_app, 'CSRF_AVAILABLE', False), 'Flask-WTF not installed')
+    def test_same_origin_group_writes_recover_when_csrf_token_is_missing(self):
+        original_csrf_enabled = self.app.config.get('WTF_CSRF_ENABLED')
+        original_csrf_check_default = self.app.config.get('WTF_CSRF_CHECK_DEFAULT')
+        self.app.config['WTF_CSRF_ENABLED'] = True
+        self.app.config['WTF_CSRF_CHECK_DEFAULT'] = True
+        headers = {
+            'Origin': 'http://localhost',
+            'X-Requested-With': 'XMLHttpRequest',
+        }
+
+        try:
+            create_response = self.client.post(
+                '/api/groups',
+                json={'name': '同源 CSRF 恢复分组'},
+                headers=headers,
+            )
+            self.assertEqual(create_response.status_code, 200)
+            create_payload = create_response.get_json()
+            self.assertTrue(create_payload['success'])
+            self.assertNotIn('csrf_error', create_payload)
+            group_id = create_payload['group_id']
+
+            update_response = self.client.put(
+                f'/api/groups/{group_id}',
+                json={'name': '同源 CSRF 恢复分组已编辑'},
+                headers=headers,
+            )
+            self.assertEqual(update_response.status_code, 200)
+            update_payload = update_response.get_json()
+            self.assertTrue(update_payload['success'])
+            self.assertNotIn('csrf_error', update_payload)
+
+            delete_response = self.client.delete(f'/api/groups/{group_id}', headers=headers)
+            self.assertEqual(delete_response.status_code, 200)
+            delete_payload = delete_response.get_json()
+            self.assertTrue(delete_payload['success'])
+            self.assertNotIn('csrf_error', delete_payload)
+        finally:
+            self.app.config['WTF_CSRF_ENABLED'] = original_csrf_enabled
+            if original_csrf_check_default is None:
+                self.app.config.pop('WTF_CSRF_CHECK_DEFAULT', None)
+            else:
+                self.app.config['WTF_CSRF_CHECK_DEFAULT'] = original_csrf_check_default
+
+    @unittest.skipUnless(getattr(web_outlook_app, 'CSRF_AVAILABLE', False), 'Flask-WTF not installed')
+    def test_cross_origin_group_write_without_csrf_token_is_rejected(self):
+        original_csrf_enabled = self.app.config.get('WTF_CSRF_ENABLED')
+        original_csrf_check_default = self.app.config.get('WTF_CSRF_CHECK_DEFAULT')
+        self.app.config['WTF_CSRF_ENABLED'] = True
+        self.app.config['WTF_CSRF_CHECK_DEFAULT'] = True
+
+        try:
+            response = self.client.post(
+                '/api/groups',
+                json={'name': '跨站 CSRF 应拒绝'},
+                headers={'Origin': 'https://evil.example'},
+            )
+            self.assertEqual(response.status_code, 400)
+            payload = response.get_json()
+            self.assertFalse(payload['success'])
+            self.assertTrue(payload['csrf_error'])
+        finally:
+            self.app.config['WTF_CSRF_ENABLED'] = original_csrf_enabled
+            if original_csrf_check_default is None:
+                self.app.config.pop('WTF_CSRF_CHECK_DEFAULT', None)
+            else:
+                self.app.config['WTF_CSRF_CHECK_DEFAULT'] = original_csrf_check_default
 
     def test_version_status_reports_update_when_remote_repository_is_newer(self):
         with patch.object(
@@ -2371,6 +2511,8 @@ class FrontendCsrfRefreshTests(unittest.TestCase):
         self.assertIn("window.addEventListener('focus'", core_js)
         self.assertIn("document.addEventListener('visibilitychange'", core_js)
         self.assertIn("await initCSRFToken(true, 'pre-request');", core_js)
+        self.assertIn("'X-Requested-With': 'XMLHttpRequest'", core_js)
+        self.assertIn('for (let attempt = 0; attempt < 3; attempt += 1)', core_js)
 
     def test_core_fetch_wrapper_retries_csrf_failures_before_showing_errors(self):
         core_js = pathlib.Path(ROOT_DIR, 'static', 'js', 'index', '01-core.js').read_text(encoding='utf-8')
@@ -2378,6 +2520,8 @@ class FrontendCsrfRefreshTests(unittest.TestCase):
         self.assertIn('async function handleAuthenticationRequiredResponse(response)', core_js)
         self.assertIn("return buildJsonResponse({ success: false, error: '请先登录', need_login: true }, 401);", core_js)
         self.assertIn("const refreshedToken = await initCSRFToken(true, 'csrf-retry');", core_js)
+        self.assertIn('appendSameOriginWriteHeader(requestOptions);', core_js)
+        self.assertIn('appendSameOriginWriteHeader(retryOptions);', core_js)
         self.assertIn('appendCSRFHeader(retryOptions, refreshedToken);', core_js)
 
 

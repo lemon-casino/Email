@@ -4,17 +4,24 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import secrets
 import sys
 import traceback
 from pathlib import Path
+from typing import Any
 
 
 APP_NAME = "OutlookEmail"
 SECRET_KEY_FILE = "secret_key.txt"
 DATABASE_FILE = "outlook_accounts.db"
 STARTUP_LOG_FILE = "startup-error.log"
+SECRET_KEY_SOURCE = "unresolved"
+SECRET_KEY_SOURCE_PATH = ""
+SECRET_KEY_FINGERPRINT = ""
+SECRET_KEY_FILE_EXISTS = False
+SECRET_KEY_FILE_MATCHES: bool | None = None
 
 
 def is_frozen() -> bool:
@@ -60,22 +67,66 @@ def startup_log_path() -> Path:
     return runtime_root() / STARTUP_LOG_FILE
 
 
+def _fingerprint_secret(secret_key: str | None) -> str:
+    if not secret_key:
+        return ""
+    return hashlib.sha256(secret_key.encode("utf-8")).hexdigest()[:12]
+
+
+def _set_secret_key_diagnostics(
+    source: str,
+    secret_key: str | None,
+    path: Path | None = None,
+    file_exists: bool = False,
+    file_matches: bool | None = None,
+) -> None:
+    global SECRET_KEY_SOURCE, SECRET_KEY_SOURCE_PATH, SECRET_KEY_FINGERPRINT
+    global SECRET_KEY_FILE_EXISTS, SECRET_KEY_FILE_MATCHES
+
+    SECRET_KEY_SOURCE = source
+    SECRET_KEY_SOURCE_PATH = str(path or "")
+    SECRET_KEY_FINGERPRINT = _fingerprint_secret(secret_key)
+    SECRET_KEY_FILE_EXISTS = file_exists
+    SECRET_KEY_FILE_MATCHES = file_matches
+
+
+def secret_key_diagnostics() -> dict[str, Any]:
+    return {
+        "source": SECRET_KEY_SOURCE,
+        "path": SECRET_KEY_SOURCE_PATH,
+        "fingerprint": SECRET_KEY_FINGERPRINT,
+        "file_exists": SECRET_KEY_FILE_EXISTS,
+        "file_matches": SECRET_KEY_FILE_MATCHES,
+    }
+
+
 def resolve_secret_key() -> str | None:
     secret_key = os.getenv("SECRET_KEY")
     if secret_key:
+        secret_key_path = runtime_root() / SECRET_KEY_FILE
+        if secret_key_path.exists():
+            stored = secret_key_path.read_text(encoding="utf-8").strip()
+            file_matches = stored == secret_key
+            source = "environment+file" if file_matches else "environment"
+            _set_secret_key_diagnostics(source, secret_key, secret_key_path, True, file_matches)
+        else:
+            _set_secret_key_diagnostics("environment", secret_key, None, False, None)
         return secret_key
 
     if not is_frozen():
+        _set_secret_key_diagnostics("missing", None, None, False, None)
         return None
 
     secret_key_path = runtime_root() / SECRET_KEY_FILE
     if secret_key_path.exists():
         stored = secret_key_path.read_text(encoding="utf-8").strip()
         if stored:
+            _set_secret_key_diagnostics("file", stored, secret_key_path, True, True)
             return stored
 
     generated = secrets.token_hex(32)
     secret_key_path.write_text(generated, encoding="utf-8")
+    _set_secret_key_diagnostics("generated-file", generated, secret_key_path, True, True)
     return generated
 
 
