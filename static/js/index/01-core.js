@@ -2,6 +2,15 @@
 
         // 全局状态
         let csrfToken = null;
+        let csrfProtectionDisabled = false;
+        let csrfRefreshPromise = null;
+        let csrfRefreshTimer = null;
+        let csrfLastRefreshAt = 0;
+        let authenticationRedirectScheduled = false;
+        const CSRF_PROACTIVE_REFRESH_MS = 10 * 60 * 1000;
+        const CSRF_PRE_REQUEST_REFRESH_MS = 8 * 60 * 1000;
+        const CSRF_RETRY_REFRESH_MS = 30 * 1000;
+        const CSRF_FOCUS_REFRESH_MS = 60 * 1000;
         let currentAccount = null;
         let currentGroupId = null;
         let currentEmails = [];
@@ -999,13 +1008,123 @@
 
         const originalFetch = window.fetch.bind(window);
 
-        // 初始化 CSRF Token
-        async function initCSRFToken(forceRefresh = false) {
-            if (csrfToken && !forceRefresh) {
-                return csrfToken;
+        function buildJsonResponse(payload, status = 401) {
+            return new Response(JSON.stringify(payload), {
+                status,
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
+
+        function cloneFetchOptions(options = {}) {
+            const cloned = {
+                credentials: 'same-origin',
+                ...(options || {})
+            };
+
+            if (options?.headers instanceof Headers) {
+                cloned.headers = new Headers(options.headers);
+            } else if (Array.isArray(options?.headers)) {
+                cloned.headers = new Headers(options.headers);
+            } else {
+                cloned.headers = { ...(options?.headers || {}) };
+            }
+
+            return cloned;
+        }
+
+        function clearCSRFRefreshTimer() {
+            if (csrfRefreshTimer) {
+                clearTimeout(csrfRefreshTimer);
+                csrfRefreshTimer = null;
+            }
+        }
+
+        function scheduleCSRFTokenRefresh(delayMs = CSRF_PROACTIVE_REFRESH_MS) {
+            clearCSRFRefreshTimer();
+            if (authenticationRedirectScheduled) {
+                return;
+            }
+
+            const safeDelay = Math.max(5000, Number(delayMs) || CSRF_PROACTIVE_REFRESH_MS);
+            csrfRefreshTimer = window.setTimeout(() => {
+                initCSRFToken(true, 'scheduled');
+            }, safeDelay);
+        }
+
+        function scheduleLoginRedirect(message = '登录状态已失效，请重新登录') {
+            if (authenticationRedirectScheduled) {
+                return;
+            }
+
+            authenticationRedirectScheduled = true;
+            csrfToken = null;
+            clearCSRFRefreshTimer();
+            showToast(message, 'warning');
+            window.setTimeout(() => {
+                window.location.href = '/login';
+            }, 900);
+        }
+
+        async function handleAuthenticationRequiredResponse(response) {
+            if (!response || response.status !== 401) {
+                return false;
             }
 
             try {
+                const contentType = response.headers.get('content-type') || '';
+                if (contentType.includes('application/json')) {
+                    const payload = await response.clone().json();
+                    if (payload?.need_login) {
+                        scheduleLoginRedirect(payload.error || '请先登录');
+                        return true;
+                    }
+                }
+            } catch (error) {
+                console.warn('Failed to inspect auth response:', error);
+            }
+
+            return false;
+        }
+
+        function refreshCSRFTokenIfUseful(reason = 'activity') {
+            if (authenticationRedirectScheduled || csrfRefreshPromise) {
+                return;
+            }
+            if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+                scheduleCSRFTokenRefresh(CSRF_RETRY_REFRESH_MS);
+                return;
+            }
+            if (!csrfLastRefreshAt || Date.now() - csrfLastRefreshAt >= CSRF_FOCUS_REFRESH_MS) {
+                initCSRFToken(true, reason);
+            }
+        }
+
+        function registerCSRFRefreshHooks() {
+            if (window.__outlookCsrfRefreshHooksBound) {
+                return;
+            }
+
+            window.__outlookCsrfRefreshHooksBound = true;
+            window.addEventListener('focus', () => refreshCSRFTokenIfUseful('focus'));
+            window.addEventListener('online', () => refreshCSRFTokenIfUseful('online'));
+            window.addEventListener('pageshow', () => refreshCSRFTokenIfUseful('pageshow'));
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'visible') {
+                    refreshCSRFTokenIfUseful('visible');
+                }
+            });
+        }
+
+        // 初始化 CSRF Token
+        async function initCSRFToken(forceRefresh = false, reason = 'manual') {
+            if (csrfToken && !forceRefresh) {
+                return csrfToken;
+            }
+            if (csrfRefreshPromise) {
+                return csrfRefreshPromise;
+            }
+
+            csrfRefreshPromise = (async () => {
                 const response = await originalFetch('/api/csrf-token', {
                     cache: 'no-store',
                     credentials: 'same-origin',
@@ -1013,18 +1132,39 @@
                         'Cache-Control': 'no-cache'
                     }
                 });
+                if (await handleAuthenticationRequiredResponse(response)) {
+                    return null;
+                }
                 if (!response.ok) {
                     throw new Error(`CSRF token request failed: ${response.status}`);
                 }
+                const contentType = response.headers.get('content-type') || '';
+                if (!contentType.includes('application/json')) {
+                    throw new Error('CSRF token request returned a non-JSON response');
+                }
                 const data = await response.json();
                 csrfToken = data.csrf_token || null;
+                csrfProtectionDisabled = Boolean(data.csrf_disabled);
+                csrfLastRefreshAt = Date.now();
                 if (data.csrf_disabled) {
                     console.warn('CSRF protection is disabled. Install flask-wtf for better security.');
                 }
+                const refreshAfterSeconds = Number(data.refresh_after_seconds);
+                const refreshDelay = Number.isFinite(refreshAfterSeconds) && refreshAfterSeconds > 0
+                    ? Math.min(Math.max(refreshAfterSeconds * 1000, 30000), CSRF_PROACTIVE_REFRESH_MS)
+                    : CSRF_PROACTIVE_REFRESH_MS;
+                scheduleCSRFTokenRefresh(refreshDelay);
                 return csrfToken;
+            })();
+
+            try {
+                return await csrfRefreshPromise;
             } catch (error) {
-                console.error('Failed to initialize CSRF token:', error);
+                console.error(`Failed to initialize CSRF token (${reason}):`, error);
+                scheduleCSRFTokenRefresh(CSRF_RETRY_REFRESH_MS);
                 return null;
+            } finally {
+                csrfRefreshPromise = null;
             }
         }
 
@@ -1068,32 +1208,36 @@
         }
 
         async function fetchWithCSRF(url, options = {}, retrying = false) {
-            const requestOptions = {
-                credentials: 'same-origin',
-                ...(options || {})
-            };
+            const requestOptions = cloneFetchOptions(options);
             const method = String(requestOptions.method || 'GET').toUpperCase();
 
             if (method !== 'GET') {
-                if (!csrfToken) {
-                    await initCSRFToken();
+                const shouldRefresh = !csrfToken || Date.now() - csrfLastRefreshAt >= CSRF_PRE_REQUEST_REFRESH_MS;
+                if (shouldRefresh) {
+                    await initCSRFToken(true, 'pre-request');
+                }
+                if (!csrfToken && !csrfProtectionDisabled && authenticationRedirectScheduled) {
+                    return buildJsonResponse({ success: false, error: '请先登录', need_login: true }, 401);
                 }
                 appendCSRFHeader(requestOptions, csrfToken);
             }
 
             const response = await originalFetch(url, requestOptions);
+            if (await handleAuthenticationRequiredResponse(response)) {
+                return response;
+            }
             if (retrying || method === 'GET') {
                 return response;
             }
 
             if (await isCSRFFailureResponse(response)) {
                 csrfToken = null;
-                const refreshedToken = await initCSRFToken(true);
-                if (refreshedToken) {
-                    const retryOptions = {
-                        credentials: 'same-origin',
-                        ...(options || {})
-                    };
+                const refreshedToken = await initCSRFToken(true, 'csrf-retry');
+                if (authenticationRedirectScheduled) {
+                    return buildJsonResponse({ success: false, error: '请先登录', need_login: true }, 401);
+                }
+                if (refreshedToken || csrfProtectionDisabled) {
+                    const retryOptions = cloneFetchOptions(options);
                     appendCSRFHeader(retryOptions, refreshedToken);
                     return fetchWithCSRF(url, retryOptions, true);
                 }
@@ -1138,7 +1282,8 @@
             // 初始化主题
             initTheme();
             // 初始化 CSRF Token
-            await initCSRFToken();
+            registerCSRFRefreshHooks();
+            await initCSRFToken(true, 'startup');
             await loadAppTimeZoneFromSettings();
             ensureForwardingSettingsUI();
             bindPersistentButtonHandlers();

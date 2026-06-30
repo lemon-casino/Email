@@ -38,6 +38,7 @@ def login():
             if verify_password(password, stored_password):
                 # 登录成功，重置失败记录
                 reset_login_attempts(client_ip)
+                session.clear()
                 session['logged_in'] = True
                 session.permanent = True
                 session.modified = True  # 确保 Flask-Session 保存 session
@@ -59,7 +60,7 @@ def login():
 @app.route('/logout')
 def logout():
     """退出登录"""
-    session.pop('logged_in', None)
+    session.clear()
     return redirect(url_for('login'))
 
 
@@ -133,6 +134,7 @@ def extension_login(token):
     if not payload:
         return redirect(url_for('login'))
 
+    session.clear()
     session['logged_in'] = True
     session.permanent = True
     session.modified = True
@@ -215,11 +217,25 @@ def api_get_version_status():
 def get_csrf_token():
     """获取CSRF Token"""
     response = None
+    lifetime_seconds = get_session_lifetime_seconds()
+    refresh_after_seconds = max(60, min(600, lifetime_seconds // 4 if lifetime_seconds else 600))
     if CSRF_AVAILABLE:
         token = generate_csrf()
-        response = jsonify({'csrf_token': token, 'csrf_disabled': False})
+        response = jsonify({
+            'csrf_token': token,
+            'csrf_disabled': False,
+            'authenticated': True,
+            'session_lifetime_seconds': lifetime_seconds,
+            'refresh_after_seconds': refresh_after_seconds,
+        })
     else:
-        response = jsonify({'csrf_token': None, 'csrf_disabled': True})
+        response = jsonify({
+            'csrf_token': None,
+            'csrf_disabled': True,
+            'authenticated': True,
+            'session_lifetime_seconds': lifetime_seconds,
+            'refresh_after_seconds': refresh_after_seconds,
+        })
 
     # CSRF token 必须与当前登录 session 一致，禁止浏览器或代理缓存。
     response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'

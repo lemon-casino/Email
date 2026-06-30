@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 
 ## [Unreleased]
 
+## [2.5.1] - 2026-06-30
+
+### Fixed
+- 登录后前端会主动刷新 CSRF Token，并在页面恢复可见、窗口聚焦、写请求前和 CSRF 失配后自动续期重试，减少长时间打开页面后操作失败的问题。
+- 后端登录态接口会刷新永久 Session，登录、扩展登录和退出登录会清理旧 Session 状态，避免旧 CSRF Token 与新登录态混用。
+
 ## [2.5.0] - 2026-06-29
 
 ### Added
